@@ -1,0 +1,71 @@
+mode: paper  # paper | live
+
+universe:
+  LV:
+    - HUBB
+    - NVT
+    - PH
+    - ETN
+  MV:
+    - POWL
+    - ETN
+    - HUBB
+    - ABBNY
+  HV:
+    - SBGSY
+    - SIEGY
+    - ABBNY
+    - ETN
+
+strategy:
+  momentum_lookback_days: 90
+  vol_lookback_days: 20
+  rebalance_every_days: 5
+  top_n_per_segment: 2
+  min_price: 5.0
+  max_weight_per_symbol: 0.25
+  stop_loss_pct: 0.1
+
+risk:
+  target_gross_exposure: 1.0
+  cash_buffer_pct: 0.02
+  min_equity: 1000.0
+  max_daily_loss_pct: 0.03
+  max_order_notional_pct_equity: 0.20
+  max_total_turnover_pct_equity: 0.60
+  min_order_notional_usd: 100.0
+
+backtest:
+  start: "2020-01-01"
+  end: "2025-12-31"
+  initial_capital: 100000
+  fee_bps: 2.0
+  slippage_bps: 3.0
+  report_dir: "reports"
+
+schedule:
+  run_at_utc: "14:35"
+  poll_seconds: 30
+  loop_state_file: "state/loop_state.json"
+
+state_file: "state/equity_state.json"
+
+runtime:
+  status_file: "state/status.json"
+  orders_file: "state/latest_orders.csv"
+  targets_file: "state/latest_targets.csv"
+
+ai_agent:
+  enabled: false
+  provider: openai
+  model: "gpt-4o-mini"
+  base_url: "https://api.openai.com/v1"
+  api_key: "YOUR_OPENAI_API_KEY"
+  timeout_seconds: 30
+  max_abs_adjustment: 0.15
+
+broker:
+  provider: alpaca
+  base_url: "https://paper-api.alpaca.markets"
+  api_key: "YOUR_ALPACA_KEY"
+  api_secret: "YOUR_ALPACA_SECRET"
