@@ -10,6 +10,7 @@ import time
 import pandas as pd
 import streamlit as st
 import yaml
+import yfinance as yf
 
 
 st.set_page_config(page_title="US + Korea Bot Dashboard", layout="wide")
@@ -74,6 +75,40 @@ def display_symbol(sym: str, names: dict[str, str]) -> str:
     return f"{name} ({sym})" if name else sym
 
 
+@st.cache_data(ttl=120)
+def fetch_latest_prices(symbols: tuple[str, ...]) -> pd.DataFrame:
+    if not symbols:
+        return pd.DataFrame(columns=["symbol", "last_price"])
+
+    rows: list[dict] = []
+    for sym in symbols:
+        try:
+            raw = yf.download(
+                tickers=sym,
+                period="7d",
+                interval="1d",
+                auto_adjust=True,
+                progress=False,
+                threads=False,
+            )
+            if raw is None or raw.empty:
+                continue
+            close_col = None
+            for c in raw.columns:
+                if str(c).lower() in {"close", "adj close", "adjclose"}:
+                    close_col = c
+                    break
+            if close_col is None:
+                continue
+            last_px = pd.to_numeric(raw[close_col], errors="coerce").dropna()
+            if last_px.empty:
+                continue
+            rows.append({"symbol": sym, "last_price": float(last_px.iloc[-1])})
+        except Exception:
+            continue
+    return pd.DataFrame(rows)
+
+
 def render_market_panel(name: str, cfg_path: Path) -> None:
     cfg = load_yaml(cfg_path)
     symbol_names = cfg.get("symbol_names", {})
@@ -95,6 +130,16 @@ def render_market_panel(name: str, cfg_path: Path) -> None:
     symbols = list(dict.fromkeys(symbols))
     symbol_labels = [display_symbol(s, symbol_names) for s in symbols]
     st.caption("Universe: " + (", ".join(symbol_labels) if symbol_labels else "n/a"))
+
+    prices = fetch_latest_prices(tuple(symbols))
+    st.markdown("**Current Prices**")
+    if prices.empty:
+        st.info("No price snapshot available right now.")
+    else:
+        p = prices.copy()
+        p["company"] = p["symbol"].map(lambda s: symbol_names.get(s, ""))
+        p = p[["company", "symbol", "last_price"]].sort_values("symbol")
+        st.dataframe(p, width="stretch")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Mode", str(status.get("mode", cfg.get("mode", "unknown"))).upper())
