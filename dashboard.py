@@ -80,6 +80,40 @@ def fetch_latest_prices(symbols: tuple[str, ...]) -> pd.DataFrame:
     if not symbols:
         return pd.DataFrame(columns=["symbol", "last_price"])
 
+    def extract_last_close(raw: pd.DataFrame, sym: str) -> float | None:
+        if raw is None or raw.empty:
+            return None
+        close_names = {"close", "adj close", "adjclose"}
+
+        frame = raw.copy()
+        if isinstance(frame.columns, pd.MultiIndex):
+            for lvl in range(frame.columns.nlevels):
+                labels = frame.columns.get_level_values(lvl)
+                lowered = [str(x).lower() for x in labels]
+                if any(x in close_names for x in lowered):
+                    picked = [labels[i] for i, x in enumerate(lowered) if x in close_names][0]
+                    out = frame.xs(picked, axis=1, level=lvl, drop_level=True)
+                    if isinstance(out, pd.Series):
+                        vals = pd.to_numeric(out, errors="coerce").dropna()
+                        return float(vals.iloc[-1]) if not vals.empty else None
+                    # If still multi-col, prefer symbol col if present, else first numeric col.
+                    out.columns = [str(c) for c in out.columns]
+                    if sym in out.columns:
+                        vals = pd.to_numeric(out[sym], errors="coerce").dropna()
+                        return float(vals.iloc[-1]) if not vals.empty else None
+                    for c in out.columns:
+                        vals = pd.to_numeric(out[c], errors="coerce").dropna()
+                        if not vals.empty:
+                            return float(vals.iloc[-1])
+                    return None
+
+        cols = {str(c).lower(): c for c in frame.columns}
+        for name in ["close", "adj close", "adjclose"]:
+            if name in cols:
+                vals = pd.to_numeric(frame[cols[name]], errors="coerce").dropna()
+                return float(vals.iloc[-1]) if not vals.empty else None
+        return None
+
     rows: list[dict] = []
     for sym in symbols:
         try:
@@ -91,19 +125,10 @@ def fetch_latest_prices(symbols: tuple[str, ...]) -> pd.DataFrame:
                 progress=False,
                 threads=False,
             )
-            if raw is None or raw.empty:
+            px = extract_last_close(raw, sym)
+            if px is None:
                 continue
-            close_col = None
-            for c in raw.columns:
-                if str(c).lower() in {"close", "adj close", "adjclose"}:
-                    close_col = c
-                    break
-            if close_col is None:
-                continue
-            last_px = pd.to_numeric(raw[close_col], errors="coerce").dropna()
-            if last_px.empty:
-                continue
-            rows.append({"symbol": sym, "last_price": float(last_px.iloc[-1])})
+            rows.append({"symbol": sym, "last_price": float(px)})
         except Exception:
             continue
     return pd.DataFrame(rows)
