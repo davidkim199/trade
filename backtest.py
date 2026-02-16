@@ -35,7 +35,8 @@ def run_backtest(
 
     weights = pd.DataFrame(0.0, index=dates, columns=close.columns)
     current_w = pd.Series(0.0, index=close.columns)
-    daily_returns = close.pct_change().fillna(0.0)
+    asset_returns = close.pct_change().fillna(0.0)
+    portfolio_returns = pd.Series(0.0, index=dates)
     turnover_series = pd.Series(0.0, index=dates)
     cost_per_turnover = (fee_bps + slippage_bps) / 10000.0
 
@@ -60,20 +61,20 @@ def run_backtest(
             turnover = 0.0
         turnover_series.loc[dt] = turnover
 
-        gross_ret = float((current_w * daily_returns.loc[dt]).sum())
+        gross_ret = float((current_w * asset_returns.loc[dt]).sum())
         net_ret = gross_ret - turnover * cost_per_turnover
-        current_w = current_w * (1.0 + daily_returns.loc[dt])
+        current_w = current_w * (1.0 + asset_returns.loc[dt])
         sw = current_w.sum()
         if sw > 0:
             current_w = current_w / sw * strategy_params.target_gross_exposure
         weights.loc[dt] = current_w
-        daily_returns.loc[dt] = net_ret
+        portfolio_returns.loc[dt] = net_ret
 
-    equity_curve = (1.0 + daily_returns).cumprod() * initial_capital
+    equity_curve = (1.0 + portfolio_returns).cumprod() * initial_capital
     return BacktestResult(
         equity_curve=equity_curve,
         weights=weights,
-        daily_returns=daily_returns,
+        daily_returns=portfolio_returns,
         turnover=turnover_series,
     )
 
