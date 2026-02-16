@@ -12,32 +12,32 @@ import streamlit as st
 import yaml
 
 
-st.set_page_config(page_title="LV/MV/HV Bot Dashboard", layout="wide")
+st.set_page_config(page_title="US + Korea Bot Dashboard", layout="wide")
 
 
-def load_config() -> tuple[dict, str]:
-    p = Path("config.yaml")
-    if p.exists():
-        with open(p, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}, str(p)
-    p = Path("config.example.yaml")
-    if p.exists():
-        with open(p, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}, str(p)
-    return {}, "config.yaml"
+MARKET_CONFIGS = {
+    "US": Path("config.us.yaml"),
+    "Korea": Path("config.kr.yaml"),
+}
+
+
+def load_yaml(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
 
 
 def runtime_paths(cfg: dict) -> dict[str, Path]:
     rcfg = cfg.get("runtime", {})
+    report_dir = Path(cfg.get("backtest", {}).get("report_dir", "reports"))
     return {
         "status": Path(rcfg.get("status_file", "state/status.json")),
         "orders": Path(rcfg.get("orders_file", "state/latest_orders.csv")),
         "targets": Path(rcfg.get("targets_file", "state/latest_targets.csv")),
         "api_costs": Path(rcfg.get("api_costs_file", "state/api_costs.csv")),
-        "equity_state": Path(cfg.get("state_file", "state/equity_state.json")),
-        "equity_curve": Path(cfg.get("backtest", {}).get("report_dir", "reports")) / "equity_curve.csv",
-        "daily_returns": Path(cfg.get("backtest", {}).get("report_dir", "reports")) / "daily_returns.csv",
-        "stats": Path(cfg.get("backtest", {}).get("report_dir", "reports")) / "stats.json",
+        "equity_curve": report_dir / "equity_curve.csv",
+        "stats": report_dir / "stats.json",
     }
 
 
@@ -54,162 +54,143 @@ def read_csv(path: Path) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
-cfg, cfg_path = load_config()
-paths = runtime_paths(cfg)
+def run_bot_command(config_path: Path, command: str) -> tuple[int, str]:
+    cmd = [sys.executable, "main.py", command, "--config", str(config_path)]
+    env = dict(os.environ)
+    try:
+        if "OPENAI_API_KEY" not in env:
+            secret_key = st.secrets.get("OPENAI_API_KEY", "")
+            if secret_key:
+                env["OPENAI_API_KEY"] = str(secret_key)
+    except Exception:
+        pass
+    out = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
+    msg = (out.stdout or "") + ("\n" + out.stderr if out.stderr else "")
+    return out.returncode, msg.strip()
 
-st.title("LV/MV/HV Electrical Equipment Bot")
-st.caption("Local status UI for signals, risk guards, orders, targets, and reports.")
+
+def display_symbol(sym: str, names: dict[str, str]) -> str:
+    name = names.get(sym, "")
+    return f"{name} ({sym})" if name else sym
+
+
+def render_market_panel(name: str, cfg_path: Path) -> None:
+    cfg = load_yaml(cfg_path)
+    symbol_names = cfg.get("symbol_names", {})
+    paths = runtime_paths(cfg)
+    status = read_json(paths["status"])
+    orders = read_csv(paths["orders"])
+    targets = read_csv(paths["targets"])
+    stats = read_json(paths["stats"])
+    api_costs = read_csv(paths["api_costs"])
+    eq = read_csv(paths["equity_curve"])
+
+    st.subheader(f"{name} Market")
+    st.caption(f"Config: `{cfg_path}`")
+
+    universe = cfg.get("universe", {})
+    symbols = []
+    for syms in universe.values():
+        symbols.extend(syms)
+    symbols = list(dict.fromkeys(symbols))
+    symbol_labels = [display_symbol(s, symbol_names) for s in symbols]
+    st.caption("Universe: " + (", ".join(symbol_labels) if symbol_labels else "n/a"))
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Mode", str(status.get("mode", cfg.get("mode", "unknown"))).upper())
+    c2.metric("Equity", f"${float(status.get('equity', 0.0)):,.2f}" if "equity" in status else "n/a")
+    c3.metric("Orders", int(status.get("orders_submitted", 0)))
+    if "risk_guard_ok" in status:
+        c4.metric("Risk", "OK" if bool(status.get("risk_guard_ok")) else "BLOCKED")
+    else:
+        c4.metric("Risk", "N/A")
+
+    st.write("Last Run (UTC):", status.get("timestamp_utc", "n/a"))
+    st.write("Signal Date:", status.get("signal_date", "n/a"))
+    st.write("Agent Rationale:", status.get("agent_rationale", "n/a"))
+    if "economics_reason" in status:
+        st.write("Economics Gate:", status.get("economics_reason", "n/a"))
+
+    btn1, btn2 = st.columns(2)
+    if btn1.button(f"Run Signal ({name})"):
+        rc, msg = run_bot_command(cfg_path, "run-once")
+        if rc == 0:
+            st.success("Signal run complete.")
+        else:
+            st.error("Signal run failed.")
+        if msg:
+            st.code(msg)
+
+    if btn2.button(f"Run Backtest ({name})"):
+        rc, msg = run_bot_command(cfg_path, "backtest")
+        if rc == 0:
+            st.success("Backtest complete.")
+        else:
+            st.error("Backtest failed.")
+        if msg:
+            st.code(msg)
+
+    st.markdown("**Latest Orders**")
+    if orders.empty:
+        st.info("No orders yet.")
+    else:
+        view = orders.copy()
+        if "symbol" in view.columns:
+            view["company"] = view["symbol"].map(lambda s: symbol_names.get(s, ""))
+        if "capped_order_usd" in view.columns:
+            view = view[view["capped_order_usd"].abs() > 0]
+        st.dataframe(view, width="stretch")
+
+    st.markdown("**Latest Target Notional**")
+    if targets.empty:
+        st.info("No targets yet.")
+    else:
+        view = targets.copy()
+        if "symbol" in view.columns:
+            view["company"] = view["symbol"].map(lambda s: symbol_names.get(s, ""))
+        if "target_notional_usd" in view.columns:
+            view = view.sort_values("target_notional_usd", ascending=False)
+        st.dataframe(view.head(20), width="stretch")
+
+    st.markdown("**Backtest Stats**")
+    if stats:
+        st.json(stats)
+    else:
+        st.info("No backtest stats yet.")
+
+    st.markdown("**API Cost**")
+    if api_costs.empty:
+        st.info("No API cost records yet.")
+    else:
+        total = float(api_costs.get("api_cost_usd", pd.Series(dtype=float)).fillna(0.0).sum())
+        st.metric("Cumulative API Cost", f"${total:,.4f}")
+        cols = [c for c in ["timestamp_utc", "signal_date", "api_cost_usd", "estimated_net_edge_bps"] if c in api_costs.columns]
+        st.dataframe(api_costs[cols].tail(20), width="stretch")
+
+    st.markdown("**Equity Curve**")
+    if eq.empty:
+        st.info("No equity curve yet.")
+    else:
+        if "date" in eq.columns:
+            eq["date"] = pd.to_datetime(eq["date"], errors="coerce")
+            eq = eq.dropna(subset=["date"]).set_index("date")
+        if "equity" in eq.columns:
+            st.line_chart(eq["equity"])
+
+
+st.title("US + Korea Trading Dashboard")
+st.caption("Run and monitor US and Korean stock universes side by side.")
 st.button("Refresh")
-st.caption(f"Config: `{cfg_path}`")
 
 st.sidebar.header("Auto Refresh")
 auto_refresh = st.sidebar.checkbox("Enable Auto Refresh", value=False)
 refresh_seconds = int(st.sidebar.number_input("Refresh Interval (sec)", min_value=5, max_value=300, value=10))
 
-col_a, col_b = st.columns(2)
-run_once_clicked = col_a.button("Run Signal Now")
-backtest_clicked = col_b.button("Run Backtest Now")
-
-
-def run_bot_command(args: list[str]) -> tuple[int, str]:
-    cmd = [sys.executable, "main.py"] + args + ["--config", cfg_path]
-    try:
-        env = dict(os.environ)
-        try:
-            if "OPENAI_API_KEY" not in env:
-                secret_key = st.secrets.get("OPENAI_API_KEY", "")
-                if secret_key:
-                    env["OPENAI_API_KEY"] = str(secret_key)
-        except Exception:
-            pass
-        out = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
-        msg = (out.stdout or "") + ("\n" + out.stderr if out.stderr else "")
-        return out.returncode, msg.strip()
-    except Exception as e:
-        return 1, str(e)
-
-
-if run_once_clicked:
-    rc, msg = run_bot_command(["run-once"])
-    if rc == 0:
-        st.success("Signal run complete.")
-    else:
-        st.error("Signal run failed.")
-    if msg:
-        st.code(msg)
-
-if backtest_clicked:
-    rc, msg = run_bot_command(["backtest"])
-    if rc == 0:
-        st.success("Backtest complete.")
-    else:
-        st.error("Backtest failed.")
-    if msg:
-        st.code(msg)
-
-status = read_json(paths["status"])
-equity_state = read_json(paths["equity_state"])
-orders = read_csv(paths["orders"])
-targets = read_csv(paths["targets"])
-stats = read_json(paths["stats"])
-api_costs = read_csv(paths["api_costs"])
-
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Mode", str(status.get("mode", cfg.get("mode", "unknown"))).upper())
-if "equity" in status:
-    col2.metric("Equity", f"${float(status.get('equity', 0.0)):,.2f}")
-else:
-    col2.metric("Equity", "n/a")
-col3.metric("Orders Submitted", int(status.get("orders_submitted", 0)))
-if "risk_guard_ok" not in status:
-    col4.metric("Risk Guard", "N/A")
-else:
-    guard_ok = bool(status.get("risk_guard_ok", False))
-    col4.metric("Risk Guard", "OK" if guard_ok else "BLOCKED")
-
-st.write("Last Run (UTC):", status.get("timestamp_utc", "n/a"))
-st.write("Signal Date:", status.get("signal_date", "n/a"))
-if status.get("risk_guard_reason"):
-    st.write("Risk Reason:", status.get("risk_guard_reason"))
-if status.get("agent_rationale"):
-    st.write("Agent Rationale:", status.get("agent_rationale"))
-if "agent_api_cost_usd" in status:
-    st.write("Agent API Cost (last run):", f"${float(status.get('agent_api_cost_usd', 0.0)):.6f}")
-if "estimated_total_cost_bps" in status:
-    st.write("Estimated Total Cost (bps):", f"{float(status.get('estimated_total_cost_bps', 0.0)):.2f}")
-if "estimated_net_edge_bps" in status:
-    st.write("Estimated Net Edge (bps):", f"{float(status.get('estimated_net_edge_bps', 0.0)):.2f}")
-if status.get("economics_reason"):
-    st.write("Economics Gate:", status.get("economics_reason"))
-
-st.subheader("Day State")
-st.json(equity_state if equity_state else {"info": "No day state yet."})
-
-st.subheader("Latest Orders")
-if orders.empty:
-    st.info("No order snapshot available yet. Run `python main.py run-once --config config.yaml` first.")
-else:
-    view = orders.copy()
-    if "capped_order_usd" in view.columns:
-        view = view[view["capped_order_usd"].abs() > 0].copy()
-    st.dataframe(view, width="stretch")
-
-st.subheader("Latest Target Notional")
-if targets.empty:
-    st.info("No targets snapshot available yet.")
-else:
-    view = targets.copy()
-    if "target_notional_usd" in view.columns:
-        view = view.sort_values("target_notional_usd", ascending=False).head(20)
-    st.dataframe(view, width="stretch")
-
-st.subheader("Backtest Stats")
-if stats:
-    st.json(stats)
-else:
-    st.info("No backtest stats yet. Run `python main.py backtest --config config.yaml` first.")
-
-st.subheader("API Cost Tracker")
-if api_costs.empty:
-    st.info("No API cost records yet.")
-else:
-    total_api_cost = float(api_costs.get("api_cost_usd", pd.Series(dtype=float)).fillna(0.0).sum())
-    st.metric("Cumulative API Cost", f"${total_api_cost:,.4f}")
-    show = api_costs.copy()
-    keep = [
-        "timestamp_utc",
-        "signal_date",
-        "api_cost_usd",
-        "prompt_tokens",
-        "completion_tokens",
-        "estimated_total_cost_bps",
-        "expected_edge_bps",
-        "estimated_net_edge_bps",
-    ]
-    keep = [c for c in keep if c in show.columns]
-    st.dataframe(show[keep].tail(50), width="stretch")
-
-st.subheader("Equity Curve")
-equity_curve = read_csv(paths["equity_curve"])
-if equity_curve.empty:
-    st.info("No equity curve found.")
-else:
-    if "date" in equity_curve.columns:
-        equity_curve["date"] = pd.to_datetime(equity_curve["date"], errors="coerce")
-        equity_curve = equity_curve.dropna(subset=["date"]).set_index("date")
-    if "equity" in equity_curve.columns:
-        st.line_chart(equity_curve["equity"])
-
-st.subheader("Daily Returns")
-daily_returns = read_csv(paths["daily_returns"])
-if daily_returns.empty:
-    st.info("No daily returns found.")
-else:
-    if "date" in daily_returns.columns:
-        daily_returns["date"] = pd.to_datetime(daily_returns["date"], errors="coerce")
-        daily_returns = daily_returns.dropna(subset=["date"]).set_index("date")
-    if "daily_return" in daily_returns.columns:
-        st.bar_chart(daily_returns["daily_return"].tail(120))
+left, right = st.columns(2)
+with left:
+    render_market_panel("US", MARKET_CONFIGS["US"])
+with right:
+    render_market_panel("Korea", MARKET_CONFIGS["Korea"])
 
 if auto_refresh:
     st.caption(f"Auto-refreshing every {refresh_seconds} seconds...")

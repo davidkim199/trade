@@ -3,5 +3,6 @@ __pycache__/
 .DS_Store
 .env
 reports/
+reports_*/
 state/
 config.yaml

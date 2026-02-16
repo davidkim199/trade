@@ -1,0 +1,83 @@
+mode: paper  # paper | live
+
+universe:
+  LV:
+    - 010120.KS   # LS ELECTRIC
+    - 103590.KS   # ILJIN Electric
+  MV:
+    - 010120.KS
+    - 298040.KS   # Hyosung Heavy Industries
+  HV:
+    - 267260.KS   # HD Hyundai Electric
+    - 298040.KS
+
+symbol_names:
+  "010120.KS": "LS ELECTRIC"
+  "103590.KS": "ILJIN Electric"
+  "298040.KS": "Hyosung Heavy Industries"
+  "267260.KS": "HD Hyundai Electric"
+
+strategy:
+  momentum_lookback_days: 90
+  vol_lookback_days: 20
+  rebalance_every_days: 5
+  top_n_per_segment: 1
+  min_price: 1000.0
+  max_weight_per_symbol: 0.40
+  stop_loss_pct: 0.1
+
+risk:
+  target_gross_exposure: 1.0
+  cash_buffer_pct: 0.02
+  min_equity: 1000.0
+  max_daily_loss_pct: 0.03
+  max_order_notional_pct_equity: 0.20
+  max_total_turnover_pct_equity: 0.60
+  min_order_notional_usd: 100.0
+
+backtest:
+  start: "2021-01-01"
+  end: "2026-12-31"
+  initial_capital: 100000
+  fee_bps: 2.0
+  slippage_bps: 3.0
+  report_dir: "reports_kr"
+
+economics:
+  enabled: true
+  expected_edge_bps: 25.0
+  extra_safety_bps: 5.0
+  fee_bps: 2.0
+  slippage_bps: 3.0
+  max_api_cost_per_run_usd: 0.05
+
+schedule:
+  # KRX open 09:00 KST = 00:00 UTC
+  run_at_utc: "00:00"
+  poll_seconds: 30
+  loop_state_file: "state/loop_state_kr.json"
+
+state_file: "state/equity_state_kr.json"
+
+runtime:
+  status_file: "state/status_kr.json"
+  orders_file: "state/latest_orders_kr.csv"
+  targets_file: "state/latest_targets_kr.csv"
+  api_costs_file: "state/api_costs_kr.csv"
+
+ai_agent:
+  enabled: true
+  provider: openai
+  model: "gpt-4o-mini"
+  base_url: "https://api.openai.com/v1"
+  api_key: "YOUR_OPENAI_API_KEY"
+  timeout_seconds: 30
+  max_abs_adjustment: 0.15
+  input_cost_per_1k_tokens_usd: 0.00015
+  output_cost_per_1k_tokens_usd: 0.0006
+
+broker:
+  provider: alpaca
+  base_url: "https://paper-api.alpaca.markets"
+  api_key: "YOUR_ALPACA_KEY"
+  api_secret: "YOUR_ALPACA_SECRET"
