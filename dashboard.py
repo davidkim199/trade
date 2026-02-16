@@ -222,6 +222,43 @@ def render_market_panel(name: str, cfg_path: Path) -> None:
             view = view.sort_values("target_notional_usd", ascending=False)
         st.dataframe(view.head(20), width="stretch")
 
+    st.markdown("**Position Plan (This Run)**")
+    if targets.empty:
+        st.info("No position plan available yet.")
+    else:
+        tgt = targets.copy()
+        if "symbol" not in tgt.columns or "target_notional_usd" not in tgt.columns:
+            st.info("Target data format missing required columns.")
+        else:
+            ords = orders.copy() if not orders.empty else pd.DataFrame(columns=["symbol", "capped_order_usd"])
+            if "symbol" not in ords.columns or "capped_order_usd" not in ords.columns:
+                ords = pd.DataFrame(columns=["symbol", "capped_order_usd"])
+
+            merged = tgt.merge(
+                ords[["symbol", "capped_order_usd"]],
+                on="symbol",
+                how="left",
+            )
+            merged["capped_order_usd"] = pd.to_numeric(merged["capped_order_usd"], errors="coerce").fillna(0.0)
+            merged["target_notional_usd"] = pd.to_numeric(merged["target_notional_usd"], errors="coerce").fillna(0.0)
+            # For paper mode with no persisted positions, treat this run's capped orders as current change.
+            merged["estimated_current_notional_usd"] = merged["capped_order_usd"]
+            merged["remaining_to_target_usd"] = merged["target_notional_usd"] - merged["estimated_current_notional_usd"]
+            merged["company"] = merged["symbol"].map(lambda s: symbol_names.get(s, ""))
+            cols = [
+                "company",
+                "symbol",
+                "estimated_current_notional_usd",
+                "target_notional_usd",
+                "remaining_to_target_usd",
+            ]
+            merged = merged[cols].sort_values("target_notional_usd", ascending=False)
+            st.dataframe(merged, width="stretch")
+            st.caption(
+                "Estimated current notional is based on this run's capped orders. "
+                "It is not a broker-confirmed fill ledger."
+            )
+
     st.markdown("**Backtest Stats**")
     if stats:
         st.json(stats)
