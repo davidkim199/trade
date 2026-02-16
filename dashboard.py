@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -73,7 +74,15 @@ backtest_clicked = col_b.button("Run Backtest Now")
 def run_bot_command(args: list[str]) -> tuple[int, str]:
     cmd = [sys.executable, "main.py"] + args + ["--config", cfg_path]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        env = dict(os.environ)
+        try:
+            if "OPENAI_API_KEY" not in env:
+                secret_key = st.secrets.get("OPENAI_API_KEY", "")
+                if secret_key:
+                    env["OPENAI_API_KEY"] = str(secret_key)
+        except Exception:
+            pass
+        out = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
         msg = (out.stdout or "") + ("\n" + out.stderr if out.stderr else "")
         return out.returncode, msg.strip()
     except Exception as e:
