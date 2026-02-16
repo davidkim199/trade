@@ -43,6 +43,14 @@ backtest:
   slippage_bps: 3.0
   report_dir: "reports"
 
+economics:
+  enabled: true
+  expected_edge_bps: 25.0
+  extra_safety_bps: 5.0
+  fee_bps: 2.0
+  slippage_bps: 3.0
+  max_api_cost_per_run_usd: 0.05
+
 schedule:
   run_at_utc: "14:35"
   poll_seconds: 30
@@ -54,6 +62,7 @@ runtime:
   status_file: "state/status.json"
   orders_file: "state/latest_orders.csv"
   targets_file: "state/latest_targets.csv"
+  api_costs_file: "state/api_costs.csv"
 
 ai_agent:
   enabled: false
@@ -63,6 +72,8 @@ ai_agent:
   api_key: "YOUR_OPENAI_API_KEY"
   timeout_seconds: 30
   max_abs_adjustment: 0.15
+  input_cost_per_1k_tokens_usd: 0.00015
+  output_cost_per_1k_tokens_usd: 0.0006
 
 broker:
   provider: alpaca

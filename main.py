@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
 
@@ -81,6 +83,29 @@ def build_risk_limits(cfg: dict) -> RiskLimits:
     )
 
 
+@dataclass
+class EconomicsParams:
+    enabled: bool
+    expected_edge_bps: float
+    extra_safety_bps: float
+    fee_bps: float
+    slippage_bps: float
+    max_api_cost_per_run_usd: float
+
+
+def build_economics_params(cfg: dict) -> EconomicsParams:
+    ecfg = cfg.get("economics", {})
+    bcfg = cfg.get("backtest", {})
+    return EconomicsParams(
+        enabled=bool(ecfg.get("enabled", True)),
+        expected_edge_bps=float(ecfg.get("expected_edge_bps", 25.0)),
+        extra_safety_bps=float(ecfg.get("extra_safety_bps", 5.0)),
+        fee_bps=float(ecfg.get("fee_bps", bcfg.get("fee_bps", 2.0))),
+        slippage_bps=float(ecfg.get("slippage_bps", bcfg.get("slippage_bps", 3.0))),
+        max_api_cost_per_run_usd=float(ecfg.get("max_api_cost_per_run_usd", 0.05)),
+    )
+
+
 def make_broker(cfg: dict):
     broker_cfg = cfg.get("broker", {})
     mode = cfg.get("mode", "paper")
@@ -116,6 +141,8 @@ def make_research_agent(cfg: dict) -> ResearchAgent:
 
     api_key = str(acfg.get("api_key", "")).strip()
     if not api_key or api_key == "YOUR_OPENAI_API_KEY":
+        api_key = str(os.getenv("OPENAI_API_KEY", "")).strip()
+    if not api_key or api_key == "YOUR_OPENAI_API_KEY":
         print("ai_agent enabled but api_key missing; disabling agent.")
         return NullResearchAgent()
 
@@ -125,6 +152,8 @@ def make_research_agent(cfg: dict) -> ResearchAgent:
         base_url=str(acfg.get("base_url", "https://api.openai.com/v1")),
         timeout_seconds=int(acfg.get("timeout_seconds", 30)),
         max_abs_adjustment=float(acfg.get("max_abs_adjustment", 0.15)),
+        input_cost_per_1k_tokens_usd=float(acfg.get("input_cost_per_1k_tokens_usd", 0.00015)),
+        output_cost_per_1k_tokens_usd=float(acfg.get("output_cost_per_1k_tokens_usd", 0.0006)),
     )
 
 
@@ -133,9 +162,10 @@ def _runtime_paths(cfg: dict) -> dict[str, Path]:
     status_file = Path(rcfg.get("status_file", "state/status.json"))
     orders_file = Path(rcfg.get("orders_file", "state/latest_orders.csv"))
     targets_file = Path(rcfg.get("targets_file", "state/latest_targets.csv"))
-    for p in [status_file, orders_file, targets_file]:
+    api_costs_file = Path(rcfg.get("api_costs_file", "state/api_costs.csv"))
+    for p in [status_file, orders_file, targets_file, api_costs_file]:
         p.parent.mkdir(parents=True, exist_ok=True)
-    return {"status": status_file, "orders": orders_file, "targets": targets_file}
+    return {"status": status_file, "orders": orders_file, "targets": targets_file, "api_costs": api_costs_file}
 
 
 def _write_status(cfg: dict, payload: dict) -> None:
@@ -145,6 +175,15 @@ def _write_status(cfg: dict, payload: dict) -> None:
 
 
 def _write_csv(path: Path, frame: pd.DataFrame) -> None:
+    frame.to_csv(path, index=False)
+
+
+def _append_api_cost_row(cfg: dict, row: dict) -> None:
+    path = _runtime_paths(cfg)["api_costs"]
+    frame = pd.DataFrame([row])
+    if path.exists():
+        prior = pd.read_csv(path)
+        frame = pd.concat([prior, frame], ignore_index=True)
     frame.to_csv(path, index=False)
 
 
@@ -232,6 +271,7 @@ def run_once_cmd(cfg: dict) -> None:
     equity = broker.get_equity()
     positions = broker.get_positions()
     risk_limits = build_risk_limits(cfg)
+    econ = build_economics_params(cfg)
     state = DailyEquityState(cfg.get("state_file", "state/equity_state.json"))
     paths = _runtime_paths(cfg)
     day_key = current_day_key_utc()
@@ -250,6 +290,12 @@ def run_once_cmd(cfg: dict) -> None:
         "orders_submitted": 0,
         "signal_date": None,
         "agent_rationale": "",
+        "agent_api_cost_usd": 0.0,
+        "expected_edge_bps": float(econ.expected_edge_bps),
+        "estimated_total_cost_bps": 0.0,
+        "estimated_net_edge_bps": 0.0,
+        "economics_ok": True,
+        "economics_reason": "ok",
     }
 
     ok, reason = check_equity_guards(equity=equity, day_open_equity=day_open, limits=risk_limits)
@@ -265,6 +311,7 @@ def run_once_cmd(cfg: dict) -> None:
     capped = cap_order_deltas(deltas, equity=equity, limits=risk_limits)
     status["signal_date"] = str(dt.date())
     status["agent_rationale"] = decision.rationale
+    status["agent_api_cost_usd"] = float(decision.api_cost_usd)
 
     targets_df = (
         target_notional.rename("target_notional_usd")
@@ -284,7 +331,52 @@ def run_once_cmd(cfg: dict) -> None:
     orders_df = orders_df.sort_values("capped_order_usd", key=lambda s: s.abs(), ascending=False)
     _write_csv(paths["orders"], orders_df)
 
+    turnover_usd = float(capped.abs().sum())
+    api_cost_bps = (float(decision.api_cost_usd) / equity * 10000.0) if equity > 0 else 0.0
+    trade_cost_bps = econ.fee_bps + econ.slippage_bps
+    total_cost_bps = trade_cost_bps + api_cost_bps + econ.extra_safety_bps
+    net_expected_bps = econ.expected_edge_bps - total_cost_bps
+    status["estimated_total_cost_bps"] = float(total_cost_bps)
+    status["estimated_net_edge_bps"] = float(net_expected_bps)
+
+    _append_api_cost_row(
+        cfg,
+        {
+            "timestamp_utc": now_utc.isoformat(),
+            "signal_date": str(dt.date()),
+            "equity_usd": float(equity),
+            "turnover_usd": turnover_usd,
+            "prompt_tokens": int(decision.prompt_tokens),
+            "completion_tokens": int(decision.completion_tokens),
+            "api_cost_usd": float(decision.api_cost_usd),
+            "estimated_total_cost_bps": float(total_cost_bps),
+            "expected_edge_bps": float(econ.expected_edge_bps),
+            "estimated_net_edge_bps": float(net_expected_bps),
+        },
+    )
+
     print(f"Signal date: {dt.date()} | equity=${equity:,.2f}")
+    if econ.enabled:
+        if decision.api_cost_usd > econ.max_api_cost_per_run_usd:
+            reason = (
+                f"Econ gate blocked trading: API cost ${decision.api_cost_usd:.4f} > "
+                f"max ${econ.max_api_cost_per_run_usd:.4f}"
+            )
+            status["economics_ok"] = False
+            status["economics_reason"] = reason
+            _write_status(cfg, status)
+            print(reason)
+            return
+        if net_expected_bps <= 0:
+            reason = (
+                f"Econ gate blocked trading: expected_edge_bps {econ.expected_edge_bps:.2f} <= "
+                f"cost_bps {total_cost_bps:.2f}"
+            )
+            status["economics_ok"] = False
+            status["economics_reason"] = reason
+            _write_status(cfg, status)
+            print(reason)
+            return
     if capped.empty:
         print("No orders after risk caps/thresholds.")
         _write_status(cfg, status)

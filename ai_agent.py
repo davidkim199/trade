@@ -13,6 +13,9 @@ class AgentDecision:
     score_adjustments: dict[str, float]
     blocked_symbols: list[str]
     rationale: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    api_cost_usd: float = 0.0
 
 
 class ResearchAgent(Protocol):
@@ -49,6 +52,8 @@ class OpenAIResearchAgent:
     base_url: str = "https://api.openai.com/v1"
     timeout_seconds: int = 30
     max_abs_adjustment: float = 0.15
+    input_cost_per_1k_tokens_usd: float = 0.00015
+    output_cost_per_1k_tokens_usd: float = 0.0006
 
     def _build_payload(
         self,
@@ -123,7 +128,8 @@ class OpenAIResearchAgent:
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=self.timeout_seconds)
             resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"]
+            body = resp.json()
+            content = body["choices"][0]["message"]["content"]
             parsed = json.loads(content)
         except Exception as e:
             return AgentDecision(score_adjustments={}, blocked_symbols=[], rationale=f"agent_error: {e}")
@@ -146,4 +152,18 @@ class OpenAIResearchAgent:
             blocked = [s for s in raw_blocked if isinstance(s, str) and s in valid_symbols]
 
         rationale = str(parsed.get("rationale", "")) if isinstance(parsed, dict) else ""
-        return AgentDecision(score_adjustments=adjustments, blocked_symbols=blocked, rationale=rationale)
+        usage = body.get("usage", {}) if isinstance(body, dict) else {}
+        prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        api_cost_usd = (
+            (prompt_tokens / 1000.0) * self.input_cost_per_1k_tokens_usd
+            + (completion_tokens / 1000.0) * self.output_cost_per_1k_tokens_usd
+        )
+        return AgentDecision(
+            score_adjustments=adjustments,
+            blocked_symbols=blocked,
+            rationale=rationale,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            api_cost_usd=float(api_cost_usd),
+        )

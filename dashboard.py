@@ -32,6 +32,7 @@ def runtime_paths(cfg: dict) -> dict[str, Path]:
         "status": Path(rcfg.get("status_file", "state/status.json")),
         "orders": Path(rcfg.get("orders_file", "state/latest_orders.csv")),
         "targets": Path(rcfg.get("targets_file", "state/latest_targets.csv")),
+        "api_costs": Path(rcfg.get("api_costs_file", "state/api_costs.csv")),
         "equity_state": Path(cfg.get("state_file", "state/equity_state.json")),
         "equity_curve": Path(cfg.get("backtest", {}).get("report_dir", "reports")) / "equity_curve.csv",
         "daily_returns": Path(cfg.get("backtest", {}).get("report_dir", "reports")) / "daily_returns.csv",
@@ -102,6 +103,7 @@ equity_state = read_json(paths["equity_state"])
 orders = read_csv(paths["orders"])
 targets = read_csv(paths["targets"])
 stats = read_json(paths["stats"])
+api_costs = read_csv(paths["api_costs"])
 
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Mode", str(status.get("mode", cfg.get("mode", "unknown"))).upper())
@@ -122,6 +124,14 @@ if status.get("risk_guard_reason"):
     st.write("Risk Reason:", status.get("risk_guard_reason"))
 if status.get("agent_rationale"):
     st.write("Agent Rationale:", status.get("agent_rationale"))
+if "agent_api_cost_usd" in status:
+    st.write("Agent API Cost (last run):", f"${float(status.get('agent_api_cost_usd', 0.0)):.6f}")
+if "estimated_total_cost_bps" in status:
+    st.write("Estimated Total Cost (bps):", f"{float(status.get('estimated_total_cost_bps', 0.0)):.2f}")
+if "estimated_net_edge_bps" in status:
+    st.write("Estimated Net Edge (bps):", f"{float(status.get('estimated_net_edge_bps', 0.0)):.2f}")
+if status.get("economics_reason"):
+    st.write("Economics Gate:", status.get("economics_reason"))
 
 st.subheader("Day State")
 st.json(equity_state if equity_state else {"info": "No day state yet."})
@@ -149,6 +159,26 @@ if stats:
     st.json(stats)
 else:
     st.info("No backtest stats yet. Run `python main.py backtest --config config.yaml` first.")
+
+st.subheader("API Cost Tracker")
+if api_costs.empty:
+    st.info("No API cost records yet.")
+else:
+    total_api_cost = float(api_costs.get("api_cost_usd", pd.Series(dtype=float)).fillna(0.0).sum())
+    st.metric("Cumulative API Cost", f"${total_api_cost:,.4f}")
+    show = api_costs.copy()
+    keep = [
+        "timestamp_utc",
+        "signal_date",
+        "api_cost_usd",
+        "prompt_tokens",
+        "completion_tokens",
+        "estimated_total_cost_bps",
+        "expected_edge_bps",
+        "estimated_net_edge_bps",
+    ]
+    keep = [c for c in keep if c in show.columns]
+    st.dataframe(show[keep].tail(50), width="stretch")
 
 st.subheader("Equity Curve")
 equity_curve = read_csv(paths["equity_curve"])
