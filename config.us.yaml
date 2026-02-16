@@ -61,6 +61,7 @@ state_file: "state/equity_state_us.json"
 
 runtime:
   status_file: "state/status_us.json"
+  status_history_file: "state/status_history_us.csv"
   orders_file: "state/latest_orders_us.csv"
   targets_file: "state/latest_targets_us.csv"
   api_costs_file: "state/api_costs_us.csv"

@@ -160,12 +160,19 @@ def make_research_agent(cfg: dict) -> ResearchAgent:
 def _runtime_paths(cfg: dict) -> dict[str, Path]:
     rcfg = cfg.get("runtime", {})
     status_file = Path(rcfg.get("status_file", "state/status.json"))
+    status_history_file = Path(rcfg.get("status_history_file", "state/status_history.csv"))
     orders_file = Path(rcfg.get("orders_file", "state/latest_orders.csv"))
     targets_file = Path(rcfg.get("targets_file", "state/latest_targets.csv"))
     api_costs_file = Path(rcfg.get("api_costs_file", "state/api_costs.csv"))
-    for p in [status_file, orders_file, targets_file, api_costs_file]:
+    for p in [status_file, status_history_file, orders_file, targets_file, api_costs_file]:
         p.parent.mkdir(parents=True, exist_ok=True)
-    return {"status": status_file, "orders": orders_file, "targets": targets_file, "api_costs": api_costs_file}
+    return {
+        "status": status_file,
+        "status_history": status_history_file,
+        "orders": orders_file,
+        "targets": targets_file,
+        "api_costs": api_costs_file,
+    }
 
 
 def _write_status(cfg: dict, payload: dict) -> None:
@@ -180,6 +187,15 @@ def _write_csv(path: Path, frame: pd.DataFrame) -> None:
 
 def _append_api_cost_row(cfg: dict, row: dict) -> None:
     path = _runtime_paths(cfg)["api_costs"]
+    frame = pd.DataFrame([row])
+    if path.exists():
+        prior = pd.read_csv(path)
+        frame = pd.concat([prior, frame], ignore_index=True)
+    frame.to_csv(path, index=False)
+
+
+def _append_status_row(cfg: dict, row: dict) -> None:
+    path = _runtime_paths(cfg)["status_history"]
     frame = pd.DataFrame([row])
     if path.exists():
         prior = pd.read_csv(path)
@@ -285,6 +301,8 @@ def run_once_cmd(cfg: dict) -> None:
         "mode": cfg.get("mode", "paper"),
         "equity": float(equity),
         "day_open_equity": float(day_open),
+        "day_pnl_usd": float(equity - day_open),
+        "day_pnl_pct": float(equity / day_open - 1.0) if day_open > 0 else 0.0,
         "risk_guard_ok": True,
         "risk_guard_reason": "ok",
         "orders_submitted": 0,
@@ -303,6 +321,22 @@ def run_once_cmd(cfg: dict) -> None:
         status["risk_guard_ok"] = False
         status["risk_guard_reason"] = reason
         _write_status(cfg, status)
+        _append_status_row(
+            cfg,
+            {
+                "timestamp_utc": status["timestamp_utc"],
+                "mode": status["mode"],
+                "equity": status["equity"],
+                "day_open_equity": status["day_open_equity"],
+                "day_pnl_usd": status["day_pnl_usd"],
+                "day_pnl_pct": status["day_pnl_pct"],
+                "risk_guard_ok": status["risk_guard_ok"],
+                "orders_submitted": status["orders_submitted"],
+                "agent_api_cost_usd": status["agent_api_cost_usd"],
+                "estimated_net_edge_bps": status["estimated_net_edge_bps"],
+                "economics_ok": status["economics_ok"],
+            },
+        )
         _write_csv(paths["orders"], pd.DataFrame(columns=["symbol", "raw_delta_usd", "capped_order_usd"]))
         print(f"Risk guard blocked trading: {reason}")
         return
@@ -365,6 +399,22 @@ def run_once_cmd(cfg: dict) -> None:
             status["economics_ok"] = False
             status["economics_reason"] = reason
             _write_status(cfg, status)
+            _append_status_row(
+                cfg,
+                {
+                    "timestamp_utc": status["timestamp_utc"],
+                    "mode": status["mode"],
+                    "equity": status["equity"],
+                    "day_open_equity": status["day_open_equity"],
+                    "day_pnl_usd": status["day_pnl_usd"],
+                    "day_pnl_pct": status["day_pnl_pct"],
+                    "risk_guard_ok": status["risk_guard_ok"],
+                    "orders_submitted": status["orders_submitted"],
+                    "agent_api_cost_usd": status["agent_api_cost_usd"],
+                    "estimated_net_edge_bps": status["estimated_net_edge_bps"],
+                    "economics_ok": status["economics_ok"],
+                },
+            )
             print(reason)
             return
         if net_expected_bps <= 0:
@@ -375,11 +425,43 @@ def run_once_cmd(cfg: dict) -> None:
             status["economics_ok"] = False
             status["economics_reason"] = reason
             _write_status(cfg, status)
+            _append_status_row(
+                cfg,
+                {
+                    "timestamp_utc": status["timestamp_utc"],
+                    "mode": status["mode"],
+                    "equity": status["equity"],
+                    "day_open_equity": status["day_open_equity"],
+                    "day_pnl_usd": status["day_pnl_usd"],
+                    "day_pnl_pct": status["day_pnl_pct"],
+                    "risk_guard_ok": status["risk_guard_ok"],
+                    "orders_submitted": status["orders_submitted"],
+                    "agent_api_cost_usd": status["agent_api_cost_usd"],
+                    "estimated_net_edge_bps": status["estimated_net_edge_bps"],
+                    "economics_ok": status["economics_ok"],
+                },
+            )
             print(reason)
             return
     if capped.empty:
         print("No orders after risk caps/thresholds.")
         _write_status(cfg, status)
+        _append_status_row(
+            cfg,
+            {
+                "timestamp_utc": status["timestamp_utc"],
+                "mode": status["mode"],
+                "equity": status["equity"],
+                "day_open_equity": status["day_open_equity"],
+                "day_pnl_usd": status["day_pnl_usd"],
+                "day_pnl_pct": status["day_pnl_pct"],
+                "risk_guard_ok": status["risk_guard_ok"],
+                "orders_submitted": status["orders_submitted"],
+                "agent_api_cost_usd": status["agent_api_cost_usd"],
+                "estimated_net_edge_bps": status["estimated_net_edge_bps"],
+                "economics_ok": status["economics_ok"],
+            },
+        )
         return
 
     submitted = 0
@@ -388,6 +470,22 @@ def run_once_cmd(cfg: dict) -> None:
         submitted += 1
     status["orders_submitted"] = submitted
     _write_status(cfg, status)
+    _append_status_row(
+        cfg,
+        {
+            "timestamp_utc": status["timestamp_utc"],
+            "mode": status["mode"],
+            "equity": status["equity"],
+            "day_open_equity": status["day_open_equity"],
+            "day_pnl_usd": status["day_pnl_usd"],
+            "day_pnl_pct": status["day_pnl_pct"],
+            "risk_guard_ok": status["risk_guard_ok"],
+            "orders_submitted": status["orders_submitted"],
+            "agent_api_cost_usd": status["agent_api_cost_usd"],
+            "estimated_net_edge_bps": status["estimated_net_edge_bps"],
+            "economics_ok": status["economics_ok"],
+        },
+    )
 
 
 def should_run_cycle(now_utc: pd.Timestamp, run_at_utc: str, last_run_day: str | None) -> bool:

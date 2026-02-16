@@ -34,6 +34,7 @@ def runtime_paths(cfg: dict) -> dict[str, Path]:
     report_dir = Path(cfg.get("backtest", {}).get("report_dir", "reports"))
     return {
         "status": Path(rcfg.get("status_file", "state/status.json")),
+        "status_history": Path(rcfg.get("status_history_file", "state/status_history.csv")),
         "orders": Path(rcfg.get("orders_file", "state/latest_orders.csv")),
         "targets": Path(rcfg.get("targets_file", "state/latest_targets.csv")),
         "api_costs": Path(rcfg.get("api_costs_file", "state/api_costs.csv")),
@@ -139,6 +140,7 @@ def render_market_panel(name: str, cfg_path: Path) -> None:
     symbol_names = cfg.get("symbol_names", {})
     paths = runtime_paths(cfg)
     status = read_json(paths["status"])
+    status_history = read_csv(paths["status_history"])
     orders = read_csv(paths["orders"])
     targets = read_csv(paths["targets"])
     stats = read_json(paths["stats"])
@@ -180,6 +182,28 @@ def render_market_panel(name: str, cfg_path: Path) -> None:
     st.write("Agent Rationale:", status.get("agent_rationale", "n/a"))
     if "economics_reason" in status:
         st.write("Economics Gate:", status.get("economics_reason", "n/a"))
+
+    st.markdown("**Gains / Losses**")
+    g1, g2, g3 = st.columns(3)
+    g1.metric("Day P&L ($)", f"{float(status.get('day_pnl_usd', 0.0)):,.2f}" if "day_pnl_usd" in status else "n/a")
+    g2.metric("Day P&L (%)", f"{float(status.get('day_pnl_pct', 0.0))*100:.2f}%" if "day_pnl_pct" in status else "n/a")
+    if not status_history.empty and "equity" in status_history.columns:
+        eq = pd.to_numeric(status_history["equity"], errors="coerce").dropna()
+        if not eq.empty:
+            cum_pnl = float(eq.iloc[-1] - eq.iloc[0])
+            g3.metric("Cumulative P&L ($)", f"{cum_pnl:,.2f}")
+        else:
+            g3.metric("Cumulative P&L ($)", "n/a")
+    else:
+        g3.metric("Cumulative P&L ($)", "n/a")
+
+    if not status_history.empty:
+        sh = status_history.copy()
+        if "timestamp_utc" in sh.columns:
+            sh["timestamp_utc"] = pd.to_datetime(sh["timestamp_utc"], errors="coerce")
+            sh = sh.dropna(subset=["timestamp_utc"]).set_index("timestamp_utc")
+        if "equity" in sh.columns:
+            st.line_chart(pd.to_numeric(sh["equity"], errors="coerce").dropna())
 
     btn1, btn2 = st.columns(2)
     if btn1.button(f"Run Signal ({name})"):
