@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
+import sys
+import time
 
 import pandas as pd
 import streamlit as st
@@ -11,12 +14,16 @@ import yaml
 st.set_page_config(page_title="LV/MV/HV Bot Dashboard", layout="wide")
 
 
-def load_config(path: str = "config.yaml") -> dict:
-    p = Path(path)
-    if not p.exists():
-        return {}
-    with open(p, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+def load_config() -> tuple[dict, str]:
+    p = Path("config.yaml")
+    if p.exists():
+        with open(p, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}, str(p)
+    p = Path("config.example.yaml")
+    if p.exists():
+        with open(p, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}, str(p)
+    return {}, "config.yaml"
 
 
 def runtime_paths(cfg: dict) -> dict[str, Path]:
@@ -45,12 +52,50 @@ def read_csv(path: Path) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
-cfg = load_config()
+cfg, cfg_path = load_config()
 paths = runtime_paths(cfg)
 
 st.title("LV/MV/HV Electrical Equipment Bot")
 st.caption("Local status UI for signals, risk guards, orders, targets, and reports.")
 st.button("Refresh")
+st.caption(f"Config: `{cfg_path}`")
+
+st.sidebar.header("Auto Refresh")
+auto_refresh = st.sidebar.checkbox("Enable Auto Refresh", value=False)
+refresh_seconds = int(st.sidebar.number_input("Refresh Interval (sec)", min_value=5, max_value=300, value=10))
+
+col_a, col_b = st.columns(2)
+run_once_clicked = col_a.button("Run Signal Now")
+backtest_clicked = col_b.button("Run Backtest Now")
+
+
+def run_bot_command(args: list[str]) -> tuple[int, str]:
+    cmd = [sys.executable, "main.py"] + args + ["--config", cfg_path]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        msg = (out.stdout or "") + ("\n" + out.stderr if out.stderr else "")
+        return out.returncode, msg.strip()
+    except Exception as e:
+        return 1, str(e)
+
+
+if run_once_clicked:
+    rc, msg = run_bot_command(["run-once"])
+    if rc == 0:
+        st.success("Signal run complete.")
+    else:
+        st.error("Signal run failed.")
+    if msg:
+        st.code(msg)
+
+if backtest_clicked:
+    rc, msg = run_bot_command(["backtest"])
+    if rc == 0:
+        st.success("Backtest complete.")
+    else:
+        st.error("Backtest failed.")
+    if msg:
+        st.code(msg)
 
 status = read_json(paths["status"])
 equity_state = read_json(paths["equity_state"])
@@ -60,10 +105,16 @@ stats = read_json(paths["stats"])
 
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Mode", str(status.get("mode", cfg.get("mode", "unknown"))).upper())
-col2.metric("Equity", f"${float(status.get('equity', 0.0)):,.2f}")
+if "equity" in status:
+    col2.metric("Equity", f"${float(status.get('equity', 0.0)):,.2f}")
+else:
+    col2.metric("Equity", "n/a")
 col3.metric("Orders Submitted", int(status.get("orders_submitted", 0)))
-guard_ok = bool(status.get("risk_guard_ok", False))
-col4.metric("Risk Guard", "OK" if guard_ok else "BLOCKED")
+if "risk_guard_ok" not in status:
+    col4.metric("Risk Guard", "N/A")
+else:
+    guard_ok = bool(status.get("risk_guard_ok", False))
+    col4.metric("Risk Guard", "OK" if guard_ok else "BLOCKED")
 
 st.write("Last Run (UTC):", status.get("timestamp_utc", "n/a"))
 st.write("Signal Date:", status.get("signal_date", "n/a"))
@@ -120,3 +171,8 @@ else:
         daily_returns = daily_returns.dropna(subset=["date"]).set_index("date")
     if "daily_return" in daily_returns.columns:
         st.bar_chart(daily_returns["daily_return"].tail(120))
+
+if auto_refresh:
+    st.caption(f"Auto-refreshing every {refresh_seconds} seconds...")
+    time.sleep(refresh_seconds)
+    st.rerun()
